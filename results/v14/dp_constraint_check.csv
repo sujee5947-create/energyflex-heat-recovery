@@ -1,0 +1,5 @@
+﻿,0
+min_hours_between_changes,4.0
+max_step_K,5.0
+hold_h,4.0
+ramp_K,5.0

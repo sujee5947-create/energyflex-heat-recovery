@@ -1,0 +1,5 @@
+﻿,jobs_diff,it_heat_diff,server_heat_removed_gap,heat_delivered_diff
+S0_Baseline,0.0,0.0,0.0,0.0
+S1_EffCooling,0.0,0.0,1.1368683772161603e-13,0.0
+S2_HeatRecovery,0.0,0.0,1.1368683772161603e-13,0.0
+S3_HR_ESS,0.0,0.0,1.1368683772161603e-13,0.0

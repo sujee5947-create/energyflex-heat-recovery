@@ -1,0 +1,11 @@
+﻿,value
+rows_hourly,73564
+rows_kept,55754
+cleaning,"[('IT >= 100 kW', 8), ('coverage >= 30 samples/h', 3715), ('no component < -0.5 kW', 2), ('reported PUE in [1.0, 1.5]', 7), ('period 2016-06..2023-12 (config change in 2024)', 14078)]"
+boundary_check_p95,0.0001146488652517208
+train_hours,26804
+test_hours,28950
+calibrated,"{'base_kw': np.float64(12.0), 'aux_frac': np.float64(0.019), 'dry_cooler_approach_c': np.float64(0.0)}"
+calibration_at_edge,True
+v11,"{'base_kw': np.float64(14.592), 'aux_frac': np.float64(0.01682), 'fan_slope_per_C_above_10': np.float64(0.000136), 'chiller': 'excluded (ESIF has none)'}"
+v1_defaults,"{'base': 0.0, 'aux': 0.0506, 'appr': 10.0}"

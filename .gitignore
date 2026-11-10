@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.venv/
+data/
+results/hourly_*.csv
+results/validation/test_hourly.csv
+results/v15/map_cells.csv
+results/v15/map_modes_by_coolant.csv
+results/pdf/
+results/*.docx
