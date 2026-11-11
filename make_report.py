@@ -174,8 +174,8 @@ def build():
     S0, S1, S2, S3 = (s.loc[k] for k in ["S0_Baseline", "S1_EffCooling", "S2_HeatRecovery", "S3_HR_ESS"])
     cut = lambda a, b: (1 - a / b) * 100
     gain = lambda a, b: (b / a - 1) * 100
-    worst_bal = max(bal.abs().max().max(), bal13.abs().max().max())
-    worst_svc = max(svc.abs().max().max(), svc13.abs().max().max())
+    worst_bal = bal13.abs().max().max()
+    worst_svc = svc13.abs().max().max()
     k65 = lambda k: v13.loc[f"65°C | {k}"]
     k45 = lambda k: v13.loc[f"45°C | {k}"]
     OPK = "운전②: 냉각수 온도·히트펌프 운전량 최적화"
@@ -194,45 +194,51 @@ def build():
     dpc = pd.read_csv(W / "dp_constraint_check.csv", index_col=0).iloc[:, 0]
     ope = lambda ths, m: opr[(opr.heat_supply == ths) & (opr["mode"].str.startswith(m))].iloc[0]
     total65 = k65("S0 기존(공랭)").primary_mwh - k65("S2 최적운전").primary_mwh
+    fun = pd.read_csv(R / "v13" / "v13_heat_funnel.csv", index_col=0)
+    f65h, f45h = fun.loc["65°C"], fun.loc["45°C"]
+    pcut = lambda k, kk=k65: cut(kk(k).primary_mwh, kk("S0 기존(공랭)").primary_mwh)
+    fcut = lambda k, kk=k65: cut(kk(k).final_mwh, kk("S0 기존(공랭)").final_mwh)
 
     doc = Document(); style_doc(doc)
 
     # ---------------- title
     doc.add_paragraph("EnergyFlex 결과 보고서", style="Title")
     para(doc, "AI 데이터센터의 전력과 열을 함께 보면 에너지를 얼마나 덜 쓸 수 있는가", size=12.5, color=ACCENT, after=2)
-    para(doc, f"자동 생성 {date.today():%Y-%m-%d} · 모델 v1.2(기본) + v1.4(물리 모델·설비 제약·실현 가능 운전) + v1.5.2(운전 지도·오차 분석) · 1 MW급 AI 연산실 + 인근 건물 난방·온수, 1년 8,760시간",
+    para(doc, f"자동 생성 {date.today():%Y-%m-%d} · 최종 모델 v1.5.2 기준 · 1 MW급 AI 연산실 + 인근 건물 난방·온수, 1년 8,760시간",
          color=MUTED, size=9, after=10)
     rich(doc, [("이 보고서를 읽는 법. ", True),
                ("그림마다 맨 위에 '핵심 →' 한 줄을 두었습니다. 그 줄만 읽어도 결론을 알 수 있도록 썼습니다. "
                 "가정값의 출처는 10장, 계산식은 11장, 어려운 용어는 12장, 믿을 수 없는 부분은 13장에 모았습니다. "
-                "모든 숫자는 프로그램이 결과 파일에서 직접 읽어 넣은 값입니다.", False)])
+                "모든 숫자는 프로그램이 결과 파일에서 직접 읽어 넣은 값입니다. "
+                "본문의 숫자는 모두 최종 모델(v1.5.2)로 계산한 값이고, 괄호 안의 버전 표시(v1.3, v1.4 등)는 그 기능이 추가된 시점을 뜻합니다. "
+                "초기 간소화 모델(v1.2)의 결과는 부록에 참고용으로 두었습니다.", False)])
 
     # ---------------- 0. summary
     doc.add_heading("0. 한 장 요약", 1)
     para(doc, "같은 AI 작업, 같은 난방을 하면서 들어간 에너지만 비교했습니다. 전기요금은 어떤 결정에도 쓰지 않았습니다.", after=6)
     rows = [
         ["같은 서비스인가", f"모든 경우의 AI 작업량과 건물 난방량이 시간마다 같음 (최대 차이 {worst_svc:.0e}). "
-         f"IT 전력은 v1.2에선 같고, v1.3 최적운전에선 냉각수 온도를 올려 {it_up:+.1f}%",
+         f"최적운전에서는 냉각수 온도를 올려 IT 전력이 {it_up:+.1f}%",
          "공정한 비교의 전제 조건 통과 (늘어난 IT 전력도 에너지에 포함)"],
         ["설비가 실제로 감당하나", f"건식냉각기를 설계 외기 {des.t_design_c:.1f}°C(0.4% 초과온도)에 맞춰 설계. 용량 초과 시간 0, "
          f"냉각수는 서버 허용 등급 {des.coolant_class}(≤{C.V13['coolant_class_max'][des.coolant_class]:.0f}°C) 안에서만 선택",
          "계산상 가능하지만 실제로는 불가능한 운전을 제외"],
-        ["효율 냉각 + 폐열 회수 (S2)", f"최종에너지 {cut(S2.total_final_energy_kwh, S0.total_final_energy_kwh):.0f}% 감소 "
-         f"(같은 일을 {gain(S2.total_final_energy_kwh, S0.total_final_energy_kwh):.0f}% 더 효율적으로)\n"
-         f"1차에너지 {cut(S2.primary_energy_kwh, S0.primary_energy_kwh):.0f}% 감소", "보일러 가스를 서버 열로 대체한 효과가 가장 큼"],
-        ["버리던 열 중 실제로 쓴 열", f"서버 열 {S2.heat_generated_kwh/1e3:,.0f} MWh 중 {S2.heat_useful_kwh/1e3:,.0f} MWh "
-         f"({S2.heat_useful_kwh/S2.heat_generated_kwh*100:.0f}%)", "여름엔 쓸 곳이 없어 대부분 버려짐"],
-        ["설비 효과 vs 운전 효과 (v1.3)", f"65°C 난방 기준 1차에너지 절감 {total65:,.0f} MWh 중 "
+        ["효율 냉각 + 폐열 회수의 효과", f"1차에너지 {pcut('S2 최적운전'):.1f}% 감소 (난방 공급 65°C), {pcut('S2 최적운전', k45):.1f}% 감소 (45°C)\n"
+         f"최종에너지 {fcut('S2 최적운전'):.0f}% 감소 (65°C). 기준은 기존 공랭(S0)",
+         "보일러 가스를 서버 열로 대체한 효과와 냉각 전력 절감이 합쳐진 값"],
+        ["버리던 열 중 실제로 쓴 열", f"서버 열 {f65h.generated_mwh:,.0f} MWh 중 {f65h.useful_mwh:,.0f} MWh "
+         f"({f65h.useful_share_pct:.0f}%). 건물 난방 수요의 {f65h.demand_covered_pct:.0f}%를 충당", "여름엔 쓸 곳이 없어 대부분 버려짐"],
+        ["설비 효과 vs 운전 효과", f"65°C 난방 기준 1차에너지 절감 {total65:,.0f} MWh 중 "
          f"운전 최적화는 {op65:,.0f} MWh ({op65/total65*100:.0f}%) — 미래를 알고 매시간 독립적으로 바꾼다는 이상적 조건의 값",
          "절감의 대부분은 설비. 운전 효과는 서버 허용 냉각수 온도에 좌우 (W32면 0)"],
-        ["실현 가능한 운전 (v1.4)", f"설정 변경 폭(시간당 {C.V13['ramp_K']:.0f} K)·최소 유지({C.V13['hold_h']}시간)·전날 기온 예보로 운전하면 "
+        ["실현 가능한 운전", f"설정 변경 폭(시간당 {C.V13['ramp_K']:.0f} K)·최소 유지({C.V13['hold_h']}시간)·전날 기온 예보로 운전하면 "
          f"운전 효과 {ope('65°C','이상적').op_effect_mwh:,.0f} → {ope('65°C','제약 운전 +').op_effect_mwh:,.0f} MWh "
          f"(이상적의 {ope('65°C','제약 운전 +').op_effect_mwh/ope('65°C','이상적').op_effect_mwh*100:.0f}%). 주 1회만 바꿔도 {hs[hs.hold_h==168].op_effect_mwh.iloc[0]:,.0f} MWh",
          "운전 효과의 대부분은 계절에 맞춘 냉각수 온도에서 나옴 → 실제로도 얻을 수 있음"],
         ["가혹 조건 (스트레스 테스트)", f"폭염 +5°C·IT 100%·냉각기 성능 −20%를 한꺼번에 줘도 불가능 운전 0시간. "
          f"냉동기 한계({C.V13['chiller_t_cond_max']:.0f}°C)에 닿으려면 여름 외기가 +{mg.heatwave_K.min():.0f}°C 더 올라가야 함",
          "설계 외기 기준 설비 크기에 여유가 있음"],
-        ["운전 지도와 예측 오차 (v1.5.2)", "본 연구 가정에서 수요가 있으면 항상 열회수가 최선. 가정한 오차를 넣으면 판단이 바뀌는 시간은 후보 간 오차 상관 ρ=1이면 약 3%(손실 1~2 MWh), "
+        ["운전 지도와 예측 오차", "본 연구 가정에서 수요가 있으면 항상 열회수가 최선. 가정한 오차를 넣으면 판단이 바뀌는 시간은 후보 간 오차 상관 ρ=1이면 약 3%(손실 1~2 MWh), "
          "ρ=0.5면 18~23%(14~16 MWh), ρ=0(스트레스 시나리오)이면 20~31%(19~41 MWh)",
          "판단이 흔들리는 곳은 냉각수 온도 경계. 오차의 상관 구조가 운전 최적화의 가치를 좌우"],
         ["후보 간 차이가 작은 시간", f"65°C 난방 기준 1·2위 후보의 차이가 1% 미만인 시간 {k65('S2 최적운전').near_tie_pct:.0f}% "
@@ -241,11 +247,11 @@ def build():
     ]
     if have_val:
         pue_t = val.loc["PUE · v1.1 · 2020–23 (검증 구간)"]
-        rows.append(["실측 데이터로 검증 (NREL ESIF)", f"PUE 예측 오차(MAPE) {pue_t.mape_pct:.1f}%, "
+        rows.append(["실측 데이터로 검증 (NLR ESIF)", f"PUE 예측 오차(MAPE) {pue_t.mape_pct:.1f}%, "
                      f"비IT 전력 WAPE {eb.loc['전체', 'wape_pct']:.0f}%\n여름 WAPE {eb.loc['여름', 'wape_pct']:.0f}% vs 겨울 {eb.loc['겨울', 'wape_pct']:.0f}%",
-                     "간소화 모델(v1.1)의 검증. v1.3 상세 설비 모델은 별도 실측 보정 필요"])
+                     "냉각 전력 간소화 모델의 검증. 상세 설비 모델(히트펌프·냉동기·펌프)은 별도 실측 보정 필요"])
     sens0 = pd.read_csv(R / "v13" / "sensitivity.csv")
-    rows.append(["가정값을 바꾸면?", f"근거 범위 안에서 가정 하나씩 바꿔도 총 1차에너지 절감률 {sens0[['saving_low','saving_high']].min().min():.0f}~{sens0[['saving_low','saving_high']].max().max():.0f}% (v1.3, 65°C)",
+    rows.append(["가정값을 바꾸면?", f"근거 범위 안에서 가정 하나씩 바꿔도 총 1차에너지 절감률 {sens0[['saving_low','saving_high']].min().min():.1f}~{sens0[['saving_low','saving_high']].max().max():.1f}% (65°C)",
                  "결론은 가정에 강건, 운전 효과 크기는 누설전력 가정에 민감"])
     table(doc, ["질문", "결과", "의미"], rows, widths=[3.6, 8.2, 5.2])
 
@@ -255,79 +261,83 @@ def build():
            "PUE는 데이터센터 안만 보고, 최종·1차에너지는 히트펌프·보일러까지 포함한 사이트 전체를 봅니다. 결론은 사이트 기준으로 냅니다.",
            "그림 1. 시스템 경계. 오른쪽 결과물(AI 작업, 난방)은 모든 경우에 같고, 왼쪽 투입(전기·가스)만 달라집니다.")
     table(doc, ["시나리오", "구성", "바꾼 것의 종류"], [
-        ["S0 기존", C.SCENARIOS["S0_Baseline"]["label"], "기준"],
-        ["S1 효율냉각", C.SCENARIOS["S1_EffCooling"]["label"], "설비"],
-        ["S2 +폐열회수", C.SCENARIOS["S2_HeatRecovery"]["label"], "설비"],
-        ["S3 +ESS", C.SCENARIOS["S3_HR_ESS"]["label"], "설비 (별도 지표로 평가)"],
+        ["S0 기존(공랭)", f"공랭 + 냉동기, 일반 UPS(효율 {C.V13['ups_legacy']:.0%}), 가스보일러 난방", "기준"],
+        ["S1 규칙운전", f"수랭(냉각수 {C.V13['liquid_supply_design']:.0f}°C 고정) + 외기냉방, 고효율 UPS({C.V13['ups_efficient']:.0%}), 가스보일러 난방", "설비"],
+        ["S1 최적운전", "S1 설비에서 냉각수 온도를 매시간 선택", "운전"],
+        ["S2 규칙운전", f"S1 + 히트펌프로 서버 열을 회수해 난방 (냉각수 {C.V13['liquid_supply_design']:.0f}°C 고정, 수요 전부 담당)", "설비"],
+        ["S2 최적운전", "S2 설비에서 냉각수 온도와 히트펌프 운전량을 매시간 선택", "운전"],
+        ["(별도) ESS", f"S2 최적운전에 ESS {C.ESS_KWH:,.0f} kWh/{C.ESS_KW:,.0f} kW 추가", "설비 (피크 지표로 따로 평가, 5장)"],
     ], widths=[2.8, 10.2, 4.0])
+    para(doc, "난방 공급온도는 65°C(기존 라디에이터)와 45°C(저온 난방) 두 조건으로 각각 계산했습니다. 대표 수치는 65°C 기준입니다.", color=MUTED, size=9)
     rich(doc, [("설비 효과와 운전 효과를 나눈 이유. ", True),
                ("공랭을 수랭으로 바꾸거나 히트펌프를 '설치'해서 생긴 절감(설비 효과)과, 같은 설비를 '어떻게 돌리느냐'로 생긴 절감(운전 효과)은 원인이 다릅니다. "
-                "둘을 섞으면 '최적화 알고리즘 덕분'인지 '좋은 장비 덕분'인지 설명할 수 없습니다. 7장에서 v1.3 모델로 둘을 분리했습니다.", False)])
+                "둘을 섞으면 '최적화 알고리즘 덕분'인지 '좋은 장비 덕분'인지 설명할 수 없습니다. 7장에서 둘을 분리했습니다.", False)])
 
     # ---------------- 2. same service
     doc.add_heading("2. 같은 서비스를 제공하는가 — 공정 비교 확인", 1)
-    figure(doc, R / "09_same_service.png",
-           "(v1.2 기준) 네 경우 모두 AI 작업량, 서버 발열, 이웃 건물에 공급한 열이 같습니다. v1.4에서는 작업량·난방량은 같지만 서버 발열은 냉각수 온도에 따라 달라집니다(아래). 그러니 에너지 차이는 '일을 덜 해서'가 아니라 '효율이 좋아서'입니다.",
-           "그림 2. 연간 합계. 실제 확인은 8,760시간 각각에서 했습니다(아래 표).")
+    para(doc, "모든 시나리오가 8,760시간 각각에서 같은 AI 작업량과 같은 난방량을 제공하는지 확인했습니다. 에너지 차이가 '일을 덜 해서'가 아니라 '효율이 좋아서' 생긴 것임을 보이기 위한 점검입니다.")
     table(doc, ["확인 항목", "방법", "최대 차이", "판정"], [
-        ["AI 작업량", "매시간 작업 수를 기준(S0)과 비교", f"{svc.jobs_diff.max():.1e}", "통과"],
-        ["서버 발열 (v1.2)", "매시간 IT 전력(=발열)을 비교", f"{svc.it_heat_diff.max():.1e}", "통과"],
-        ["서버 열 전부 제거", "외기냉방 + 냉동기 + 히트펌프 흡열 = 발생열", f"{svc.server_heat_removed_gap.max():.1e} kW", "통과"],
-        ["건물 난방량", "유효열 + 보일러 열 = 난방 수요", f"{svc.heat_delivered_diff.max():.1e} kW", "통과"],
-        ["에너지 수지 (모든 식)", "냉각·열·히트펌프·배관·ESS·전력망 수지", f"{worst_bal:.1e} kW", "통과"],
+        ["AI 작업량", "매시간 작업 수를 기준(S0)과 비교", f"{svc13.jobs_diff.max():.1e}", "통과"],
+        ["건물 난방량", "유효열 + 보일러 열 = 난방 수요", f"{svc13.heat_delivered_diff.max():.1e} kW", "통과"],
+        ["서버 열 전부 제거", "외기냉방 + 냉동기 + 히트펌프 흡열 = 발생열", f"{bal13.cooling_balance.abs().max():.1e} kW", "통과"],
+        ["방열 수지", "건식냉각기가 버린 열 = 외기냉방 + 냉동기 열 + 냉동기 전기 + 펌프 열", f"{bal13.rejection_balance.abs().max():.1e} kW", "통과"],
+        ["에너지 수지 (모든 식)", "냉각·난방·히트펌프·배관·방열 수지", f"{bal13.abs().max().max():.1e} kW", "통과"],
     ], widths=[3.4, 7.6, 3.0, 2.0])
-    rich(doc, [("v1.3의 주의점. ", True),
-               (f"v1.3에서는 냉각수 온도를 올리면 칩이 따뜻해져 IT 전력이 늘어납니다(누설전력). 65°C 난방 최적운전의 IT 전력량은 "
+    rich(doc, [("주의점: 서버 전력은 같지 않습니다. ", True),
+               (f"냉각수 온도를 올리면 칩이 따뜻해져 IT 전력이 늘어납니다(누설전력). 65°C 난방 최적운전의 IT 전력량은 "
                 f"{k65('S2 최적운전').it_mwh:,.0f} MWh로 규칙운전({k65('S2 규칙운전').it_mwh:,.0f} MWh)보다 {it_up:.1f}% 많습니다. "
-                "따라서 v1.3에서 같은 것은 'AI 작업량'과 '난방량'이고, 서버 소비전력·발열은 같지 않습니다. 늘어난 전기는 그대로 에너지에 포함했습니다.", False)])
+                "따라서 같은 것은 'AI 작업량'과 '난방량'이고, 서버 소비전력·발열은 같지 않습니다. 늘어난 전기는 그대로 에너지에 포함했습니다.", False)])
 
-    # ---------------- 3. results v1.2
-    doc.add_heading("3. 결과 — 어떤 조합이 에너지를 얼마나 줄이나 (v1.2)", 1)
-    figure(doc, R / "01_final_energy_breakdown.png",
-           f"S2(효율 냉각 + 폐열 회수)는 S0보다 최종에너지를 {cut(S2.total_final_energy_kwh, S0.total_final_energy_kwh):.0f}% 줄였습니다. 줄어든 것의 대부분은 보일러 가스(회색)입니다.",
-           "그림 3. 연간 최종에너지 구성. 히트펌프 전기(초록)가 새로 생기지만 그보다 훨씬 많은 가스가 사라집니다.")
-    figure(doc, R / "02_accounting_bases.png",
-           "같은 결과라도 어떤 잣대로 재느냐에 따라 개선 폭이 다릅니다. 전기를 만드는 데 드는 연료까지 따지는 1차에너지 기준에선 개선 폭이 작아집니다.",
-           "그림 4. 최종에너지·1차에너지·엑서지 기준 비교 (S0 = 100).")
-    abc = combos[combos.combo == "ABC"].iloc[0]; c_only = combos[combos.combo == "C"].iloc[0]
-    figure(doc, R / "combos" / "07_combinations.png",
-           f"네 가지 대책 16개 조합 중 ABC(효율냉각+고효율 전력변환+열회수)가 최선입니다. 열회수(C)만 단독으로 하면 전기는 {-c_only.elec_cut_pct:.0f}% 늘지만 가스가 더 크게 줄어듭니다.",
-           "그림 5. 2⁴ = 16개 조합. A 효율냉각, B 고효율 전력변환, C 히트펌프 열회수, D ESS.")
-    table(doc, ["대책", "단독 효과 (MWh/년)", "다른 대책 위에 추가 (MWh/년)", "평균 효과 (MWh/년)"],
-          [[{"A": "A 효율 냉각", "B": "B 고효율 전력변환", "C": "C 히트펌프 열회수", "D": "D ESS"}[k],
-            f"{r.alone_mwh:,.0f}", f"{r.on_top_of_others_mwh:,.0f}", f"{r.average_effect_mwh:,.0f}"] for k, r in eff.iterrows()],
-          widths=[4.4, 4.0, 4.6, 4.0])
-    para(doc, "단독 효과와 '추가' 효과가 다르면 대책끼리 서로 영향을 준다는 뜻입니다. A(수랭 → 냉각수가 따뜻함)가 있으면 C(히트펌프)의 효율이 좋아져 C의 효과가 커집니다(시너지).",
-         color=MUTED, size=9)
+    # ---------------- 3. results (final model)
+    doc.add_heading("3. 결과 — 에너지를 얼마나 줄이나", 1)
+    rows = []
+    for lab, kk in [("65°C", k65), ("45°C", k45)]:
+        for k in ["S0 기존(공랭)", "S1 규칙운전", "S1 최적운전", "S2 규칙운전", "S2 최적운전"]:
+            if lab == "45°C" and not k.startswith("S2"):
+                continue
+            r = kk(k)
+            rows.append([lab, k, f"{r.final_mwh:,.0f}", f"{r.primary_mwh:,.0f}", "기준" if k.startswith("S0") else f"{pcut(k, kk):.1f}%", f"{r.pue:.2f}"])
+    rich(doc, [("핵심 → ", True),
+               (f"효율 냉각과 폐열 회수를 함께 적용하고 운전을 최적화하면(S2 최적운전) 기존 공랭 대비 1차에너지가 {pcut('S2 최적운전'):.1f}% 줄어듭니다(난방 공급 65°C). "
+                f"난방을 45°C로 공급할 수 있으면 {pcut('S2 최적운전', k45):.1f}%입니다.", False)])
+    table(doc, ["난방 공급", "시나리오", "최종에너지 (MWh/년)", "1차에너지 (MWh/년)", "1차에너지 절감", "PUE"], rows, widths=[2.0, 3.6, 3.2, 3.2, 2.8, 2.2])
+    para(doc, "S0·S1은 히트펌프가 없어 난방 공급온도와 무관하므로 65°C 줄에만 적었습니다. PUE는 데이터센터 안만 보는 지표라 히트펌프·보일러를 포함하지 않습니다.", color=MUTED, size=9)
+    figure(doc, R / "v13" / "13_v13_breakdown.png",
+           f"공랭(S0)의 냉각 관련 전력은 냉동기 {k65('S0 기존(공랭)').chiller_mwh:,.0f}, 건식냉각기 팬 {k65('S0 기존(공랭)').dc_fan_mwh:,.0f}, "
+           f"실내 공조기 팬 {k65('S0 기존(공랭)').crah_fan_mwh:,.0f}, 펌프 {k65('S0 기존(공랭)').pump_mwh:,.0f} MWh/년입니다. 수랭에서는 대부분 사라지고, "
+           f"히트펌프를 더하면 보일러 연료 {k65('S0 기존(공랭)').boiler_fuel_mwh:,.0f} MWh가 히트펌프 전기 {k65('S2 최적운전').hp_mwh:,.0f} MWh로 바뀝니다.",
+           "장비별 연간 최종에너지 (난방 공급 65°C).")
+    para(doc, "절감이 설비에서 왔는지 운전에서 왔는지는 7장에서 나눠 봅니다.", color=MUTED, size=9)
 
     # ---------------- 4. heat
-    doc.add_heading("4. 버리던 열은 얼마나 실제로 쓰였나 — 발생 → 회수 가능 → 회수 → 유효", 1)
-    figure(doc, R / "08_heat_funnel.png",
-           f"서버가 만든 열의 {S2.heat_useful_kwh/S2.heat_generated_kwh*100:.0f}%만 이웃 건물이 실제로 썼습니다. 막힌 곳은 장비가 아니라 '열을 쓸 곳(수요)'입니다.",
-           "그림 6. 열 깔때기 (S2, 1년). ④가 ③보다 큰 이유는 히트펌프가 전기를 써서 열을 더하기 때문이고, ⑤는 배관에서 잃은 열을 뺀 값입니다.")
-    table(doc, ["단계", "뜻", "연간 (MWh)"], [
-        ["① 발생열", "서버·전력변환 장치가 만든 모든 열", f"{S2.heat_generated_kwh/1e3:,.0f}"],
-        ["② 회수 가능열", "히트펌프 용량 한도 안에서 뽑을 수 있었던 열 (수요 무시)", f"{S2.heat_recoverable_kwh/1e3:,.0f}"],
-        ["③ 회수열", "수요만큼 실제로 뽑아낸 열", f"{S2.heat_extracted_kwh/1e3:,.0f}"],
-        ["④ 히트펌프 출력", "③ + 히트펌프 전기", f"{S2.heat_recovered_kwh/1e3:,.0f}"],
-        ["⑤ 유효열", f"배관손실 {C.PIPE_LOSS_FRAC*100:.0f}% 뺀 뒤 건물이 쓴 열 (수요 초과 불가)", f"{S2.heat_useful_kwh/1e3:,.0f}"],
-    ], widths=[3.0, 10.5, 3.5])
-    figure(doc, R / "03_monthly_heat.png",
-           "겨울엔 회수열을 대부분 쓰지만 여름엔 난방 수요가 거의 없어 열을 버립니다. 열 저장이나 여름철 열 수요(온수·흡수식 냉방)가 다음 과제입니다.",
-           "그림 7. 월별 유효열과 버린 열 (S2).")
+    doc.add_heading("4. 버리던 열은 얼마나 실제로 쓰였나 — 발생 → 회수 → 유효", 1)
+    figure(doc, R / "v13" / "28_heat_funnel.png",
+           f"서버가 만든 열의 {f65h.useful_share_pct:.0f}%만 이웃 건물이 실제로 썼습니다. 건물 난방 수요는 {f65h.demand_covered_pct:.0f}% 충당했으므로, 막힌 곳은 장비가 아니라 '열을 쓸 곳(수요)'입니다.",
+           "열 깔때기 (S2 최적운전, 65°C, 1년). ③이 ②보다 큰 이유는 히트펌프가 전기를 써서 열을 더하기 때문이고, ④는 배관에서 잃은 열을 뺀 값입니다.")
+    table(doc, ["단계", "뜻", "65°C 난방 (MWh/년)", "45°C 난방 (MWh/년)"], [
+        ["① 발생열", "서버·전력변환 장치가 만든 모든 열", f"{f65h.generated_mwh:,.0f}", f"{f45h.generated_mwh:,.0f}"],
+        ["② 회수열", "히트펌프가 서버 냉각수에서 실제로 뽑아낸 열", f"{f65h.extracted_mwh:,.0f}", f"{f45h.extracted_mwh:,.0f}"],
+        ["③ 히트펌프 출력", "② + 히트펌프 전기", f"{f65h.hp_output_mwh:,.0f}", f"{f45h.hp_output_mwh:,.0f}"],
+        ["④ 유효열", f"배관손실 {C.PIPE_LOSS_FRAC*100:.1f}% 뺀 뒤 건물이 쓴 열 (수요 초과 불가)", f"{f65h.useful_mwh:,.0f}", f"{f45h.useful_mwh:,.0f}"],
+        ["버린 열", "① − ②, 건식냉각기로 밖에 버린 서버 열", f"{f65h.rejected_mwh:,.0f}", f"{f45h.rejected_mwh:,.0f}"],
+    ], widths=[3.0, 8.0, 3.0, 3.0])
+    figure(doc, R / "v13" / "29_monthly_heat.png",
+           "겨울엔 서버 열의 상당 부분을 쓰지만 여름엔 난방 수요가 거의 없어 열을 버립니다. 열 저장이나 여름철 열 수요(온수·흡수식 냉방)가 다음 과제입니다.",
+           "월별 유효열과 버린 열 (S2 최적운전, 65°C).")
 
     # ---------------- 5. ESS
     doc.add_heading("5. ESS는 따로 평가 — 에너지 절감이 아니라 피크 저감", 1)
     e0, e1 = ess.iloc[0], ess.iloc[1]
-    figure(doc, R / "04_ess_tradeoff.png",
-           f"ESS는 에너지를 줄이지 않고 오히려 충방전 손실({e0.ess_loss_kwh/1e3:,.1f} MWh/년)을 더합니다. 대신 최대 전력을 {e0.peak_cut_kw:,.0f} kW 낮춥니다. "
-           f"배터리를 더 깊게 쓰면 피크는 {e1.peak_cut_kw - e0.peak_cut_kw:,.0f} kW 더 깎이지만 수명이 더 빨리 줄어듭니다.",
-           "그림 8. ESS 운전 범위 비교. 그래서 ESS는 에너지 절감 지표와 섞지 않고 '피크 저감·열화' 지표로 따로 봅니다.")
+    rich(doc, [("핵심 → ", True),
+               (f"ESS는 에너지를 줄이지 않습니다. 충방전 손실만큼 오히려 더 씁니다. 대신 가장 많이 쓰는 순간의 전력(피크)을 낮춥니다. "
+                f"S2 최적운전의 전력 사용 패턴에 ESS를 적용하면 피크가 {k65('S2 최적운전').peak_kw:,.0f} → {k65('S2 최적운전').ess_peak_kw:,.0f} kW(65°C 난방), "
+                f"{k45('S2 최적운전').peak_kw:,.0f} → {k45('S2 최적운전').ess_peak_kw:,.0f} kW(45°C 난방)로 내려갑니다.", False)])
+    para(doc, "그래서 ESS는 에너지 절감 지표와 섞지 않고 '피크 저감·열화' 지표로 따로 봅니다. 운전 범위(충전 상태 폭)에 따른 피크 저감과 수명 소모의 맞교환은 초기 모델로 계산했고 부록에 실었습니다.")
 
     # ---------------- 6. v1.3 physics
-    doc.add_heading("6. 물리 모델 정교화 (v1.3)", 1)
-    para(doc, "v1.2는 팬·펌프 전력을 '냉각열의 몇 %'로, 히트펌프 효율을 고정값으로 두었습니다. v1.3은 장비마다 물리 법칙에 가까운 식을 넣었습니다.")
-    table(doc, ["부분", "v1.2", "v1.3"], [
+    doc.add_heading("6. 물리 모델 — 장비를 어떻게 계산했나", 1)
+    para(doc, "초기 모델(v1.2)은 팬·펌프 전력을 '냉각열의 몇 %'로, 히트펌프 효율을 고정값으로 두었습니다. 최종 모델은 장비마다 물리 법칙에 가까운 식을 넣었습니다. 이 보고서의 결과는 모두 오른쪽 열(최종 모델)로 계산했습니다.")
+    table(doc, ["부분", "초기 모델 (v1.2)", "최종 모델"], [
         ["히트펌프 COP", "고정값 (4.9)", "열원(서버 냉각수) 출구온도·난방 출구온도·부분부하율로 계산 (v1.4). 외기온도는 직접 쓰지 않음"],
         ["냉동기 운전 한계", "없음", f"응축온도 {C.V13['chiller_t_cond_max']:.0f}°C 초과 시 '운전 불가'로 판정, 최적화에서 제외 (v1.4)"],
         ["펌프", "보조전력 비율에 포함", "정압 + 마찰 + 최소유량 + 효율곡선. 실측 성능곡선 CSV로 교체 가능. 단순 세제곱 법칙 미사용"],
@@ -349,16 +359,6 @@ def build():
     figure(doc, R / "v13" / "12_pump_model.png",
            "펌프는 유량을 절반으로 줄여도 전력이 1/8로 줄지 않습니다. 배관 높이차(정압), 최소 유량, 효율 저하 때문입니다.",
            "그림 10. 펌프 전력 모델과 단순 세제곱 법칙 비교 (수랭 루프).")
-    figure(doc, R / "v13" / "13_v13_breakdown.png",
-           f"v1.3에서 공랭(S0)의 냉각 관련 전력은 냉동기 {k65('S0 기존(공랭)').chiller_mwh:,.0f}, 건식냉각기 팬 {k65('S0 기존(공랭)').dc_fan_mwh:,.0f}, "
-           f"실내 공조기 팬 {k65('S0 기존(공랭)').crah_fan_mwh:,.0f}, 펌프 {k65('S0 기존(공랭)').pump_mwh:,.0f} MWh/년입니다. 수랭에서는 대부분 사라집니다.",
-           "그림 11. v1.3 장비별 연간 에너지 (난방 공급 65°C).")
-    figure(doc, R / "v13" / "17_v12_vs_v13.png",
-           "모델을 정교화해도 결론(순서와 대략의 크기)은 유지됩니다. 숫자는 시나리오별로 "
-           + ", ".join(f"{n} {(v13.loc[k13, 'final_mwh'] / (s.loc[k12, 'total_final_energy_kwh'] / 1e3) - 1) * 100:+.1f}%"
-                       for n, k12, k13 in [("S0", "S0_Baseline", "65°C | S0 기존(공랭)"), ("S1", "S1_EffCooling", "65°C | S1 규칙운전"),
-                                           ("S2", "S2_HeatRecovery", "65°C | S2 규칙운전")]) + " 달라졌습니다.",
-           "그림 12. 같은 시나리오를 v1.2와 v1.3으로 계산한 연간 최종에너지 (규칙 운전, 65°C).")
 
     # ---------------- 7. equipment vs operation
     doc.add_heading("7. 설비 효과 vs 운전 최적화 효과", 1)
@@ -390,7 +390,7 @@ def build():
            f"1·2위 후보의 차이가 1% 미만인 시간은 {o65.near_tie_pct:.0f}%지만, 그중 대부분({o65.near_tie_setpoint_pct:.0f}%p)은 같은 운전 방식에서 냉각수 온도만 다른 경우입니다. "
            f"냉각 방식이나 히트펌프 운전량이 갈리는 시간은 {o65.near_tie_mode_pct:.0f}%입니다. 이 숫자는 '후보 간 에너지 차이가 작다'는 뜻이지, 그만큼 판단이 틀린다는 뜻은 아닙니다.",
            "1·2위 후보의 1차에너지 차이 분포를 '무엇이 둘을 갈랐는지'로 나눈 것. 실제로 판단이 뒤집히는 비율은 예측 오차를 넣은 지도 B에서 계산합니다.")
-    doc.add_heading("운전 가능성 점검 (v1.3.1 → v1.4)", 2)
+    doc.add_heading("운전 가능성 점검", 2)
     para(doc, "수지가 0으로 맞아도 설비가 실제로 그 운전을 할 수 있는지는 별개입니다. 다음을 확인했습니다.")
     f65 = lambda k: feas.loc[f"65°C | {k}"]
     table(doc, ["점검 항목", "기준", "결과 (65°C 난방)"], [
@@ -398,7 +398,7 @@ def build():
         ["용량 부족 시 응축온도 상승", "모자라면 응축온도↑ → 냉동기 효율↓로 처리", f"S0 {int(f65('S0 기존(공랭)').cond_raised_h)}시간, 외기냉방 용량 제한 {int(feas.free_cap_limited_h.max())}시간"],
         ["서버 냉각수 허용온도", f"ASHRAE {C.V13['coolant_class']}: 공급 ≤ {C.V13['coolant_class_max'][C.V13['coolant_class']]:.0f}°C", f"최적운전 최고 공급온도 {f65('S2 최적운전').max_t_sup:.0f}°C"],
         ["설계 외기온도", "모의 기상 1년의 0.4% 초과온도 (ASHRAE 설계조건 방식)", f"{des.t_design_c:.1f}°C → 건식냉각기 {des.dc_design_kw:,.0f} kW, 팬 정격 {des.dc_fan_rated_kw:.0f} kW"],
-        ["ESS 피크 (v1.3 부하)", "v1.3 최적운전 전력 프로파일로 다시 계산", f"{f65('S2 최적운전').peak_kw:,.0f} → {f65('S2 최적운전').ess_peak_kw:,.0f} kW"],
+        ["ESS 피크", "S2 최적운전 전력 프로파일로 계산", f"{f65('S2 최적운전').peak_kw:,.0f} → {f65('S2 최적운전').ess_peak_kw:,.0f} kW"],
     ], widths=[4.0, 6.0, 7.0])
     cpd = st[st.stress.str.startswith("복합")].set_index("case")
     figure(doc, W / "20_stress_test.png",
@@ -411,7 +411,7 @@ def build():
         color=MUTED, size=9)
 
     # ---------------- 7-2 realistic operation (P2)
-    doc.add_heading("실현 가능한 운전 — 이상적 운전과 비교 (v1.4)", 2)
+    doc.add_heading("실현 가능한 운전 — 이상적 운전과 비교", 2)
     para(doc, f"지금까지의 '최적 운전'은 매시간 설정을 마음대로 바꾸고 미래 날씨를 정확히 안다고 가정했습니다. 실제 운전에 가깝게 세 가지 제약을 넣었습니다. "
               f"① 냉각수 설정온도는 시간당 {C.V13['ramp_K']:.0f} K까지만 바꿀 수 있고, ② 한 번 바꾸면 {C.V13['hold_h']}시간은 유지하며, "
               f"③ 계획은 실제 기온이 아니라 전날 예보(오차 표준편차 {C.V13['forecast_sd']}°C)로 세웁니다. "
@@ -437,7 +437,7 @@ def build():
         tch = {ts: mbc[(mbc.heat_supply == 65.0) & (mbc.coolant == ts) & (mbc.demand == 400) & mbc.strat.str.contains("냉동기")].t_out.min()
                for ts in (30.0, 35.0, 40.0)}
         tch40 = tch[40.0]
-        doc.add_heading("8. 최적 운전 지도 — 지도 A(오차 없음)와 지도 B(오차 있음) (v1.5)", 1)
+        doc.add_heading("8. 최적 운전 지도 — 지도 A(오차 없음)와 지도 B(오차 있음)", 1)
         para(doc, f"외기온도(−15~35°C)와 난방 수요(0~800 kW)의 모든 조합에서, IT 평균 부하({C.IT_CAPACITY_KW*(C.IT_IDLE_FRACTION+(1-C.IT_IDLE_FRACTION)*C.UTIL_MEAN):.0f} kW)와 "
                   f"서버 등급 {C.V13['coolant_class']}를 고정하고 1차에너지가 가장 작은 운전을 찾았습니다. 고른 것은 히트펌프 운전량(0·50·100%)과 냉각수 공급온도이고, "
                   "결과를 '열회수+외기냉방 / 열회수+냉동기 보조 / 혼합(부분 회수) / 외기냉방만 / 냉동기 사용' 다섯 가지 전략으로 표시했습니다. "
@@ -479,11 +479,11 @@ def build():
                "가능성이 낮은 스트레스 시나리오이며, 수학적으로 보장된 최악의 상한은 아닙니다.")
 
     # ---------------- 9. validation
-    doc.add_heading("9. 실측 데이터로 검증 (NREL ESIF)", 1)
+    doc.add_heading("9. 실측 데이터로 검증 (NLR ESIF)", 1)
     if have_val:
-        rich(doc, [("검증 범위. ", True), ("여기서 검증한 것은 간소화 냉각 전력 모델(v1.1 회귀식)입니다. v1.3의 상세 팬·펌프·히트펌프 모델은 "
+        rich(doc, [("검증 범위. ", True), ("여기서 검증한 것은 간소화 냉각 전력 모델(회귀식)입니다. 최종 모델의 상세 팬·펌프·히트펌프 모델은 "
                                          "ESIF로 직접 검증하지 않았으며 별도의 실측 보정이 필요합니다.", False)])
-        para(doc, "미국 국립재생에너지연구소(NREL) ESIF 데이터센터의 2016~2023년 시간별 실측값을 썼습니다. 2016~19년으로 모델을 맞추고(보정), "
+        para(doc, "미국 국립재생에너지연구소(NLR, 옛 NREL) ESIF 데이터센터의 2016~2023년 시간별 실측값을 썼습니다. 2016~19년으로 모델을 맞추고(보정), "
                   "한 번도 보지 않은 2020~23년으로 성적을 매겼습니다(검증). ESIF에는 냉동기와 히트펌프가 없어서 '냉각 보조전력(팬·펌프)과 PUE'만 검증했습니다.")
         figure(doc, V / "05_esif_validation.png",
                f"PUE는 평균 {abs(pue_t.bias):.4f}만큼 낮게 예측했고, 95% 일치 범위는 {pue_t.loa_low:+.3f}~{pue_t.loa_high:+.3f}입니다. PUE 수준에서는 잘 맞습니다.",
@@ -567,7 +567,7 @@ def build():
     formula(doc, "qevap", r"Q_{\mathrm{evap}}=Q_{\mathrm{HP}}-W_{\mathrm{HP}},\quad W_{\mathrm{HP}}=\frac{Q_{\mathrm{HP}}}{\mathrm{COP}},\quad Q_{\mathrm{useful}}=(1-\lambda)\,Q_{\mathrm{HP}}",
             "회수열(서버에서 뽑은 열) = 출력 − 전기. 유효열 = 출력에서 배관손실을 뺀 값.")
     formula(doc, "boiler", r"F_{\mathrm{gas}}=\frac{D-Q_{\mathrm{useful}}}{\eta_{\mathrm{boiler}}}", "부족한 난방은 보일러(효율 0.9)가 채움.")
-    doc.add_heading("장비 모델 (v1.3)", 2)
+    doc.add_heading("장비 모델", 2)
     formula(doc, "cop", r"\mathrm{COP}=\min\left(\eta_c\frac{T_{\mathrm{cond}}}{T_{\mathrm{cond}}-T_{\mathrm{evap}}},\ \mathrm{COP}_{\max}\right)\cdot \mathrm{PLF},\quad T_{\mathrm{evap}}=T_{\mathrm{ret}}-5,\ T_{\mathrm{cond}}=T_{\mathrm{supply}}+5",
             f"히트펌프 효율: 이론 최대(카르노)의 {C.V13['hp_carnot']:.0%}. 냉각수 환수온도(T_ret)와 난방 공급온도(T_supply)의 차이가 작을수록 좋음.", fs=13)
     formula(doc, "plf", r"\mathrm{PLF}=1-C_d\left(1-\frac{\mathrm{PLR}}{\mathrm{PLR}_{\min}}\right)\ \ (\mathrm{PLR}<\mathrm{PLR}_{\min}),\ \ \mathrm{otherwise}\ 1",
@@ -664,9 +664,9 @@ def build():
         ("단순화된 열 흐름. ", "v1.3.1에서 히트펌프 흡열 후 환수온도 저하는 넣었지만, 유량 변화에 따른 온도차 변화와 배관·탱크의 열 관성은 없습니다."),
         ("후보의 범위. ", "히트펌프 운전량은 0·50·100% 세 단계, 냉각수 온도는 5°C 간격만 비교했습니다. 연속 최적화나 기동·정지 비용은 없습니다."),
         ("서버 등급. ", f"기본값 {C.V13['coolant_class']}는 가정입니다. 실제 서버 사양이 W32라면 운전 최적화 효과는 거의 0입니다."),
-        ("상세 모델 미검증. ", "v1.3의 팬·펌프·히트펌프 식은 문헌·표준값으로 만들었고 실측으로 보정하지 않았습니다. ESIF 검증은 간소화 모델에 대한 것입니다."),
+        ("상세 모델 미검증. ", "최종 모델의 팬·펌프·히트펌프 식은 문헌·표준값으로 만들었고 실측으로 보정하지 않았습니다. ESIF 검증은 간소화 모델에 대한 것입니다."),
         ("검증 범위. ", "ESIF에는 냉동기·히트펌프가 없어 이 둘의 모델은 실측으로 검증되지 않았습니다. 2020년 이후 펌프 전력이 2~3배로 늘어난 변화(드리프트)가 있고, 2024년 설비 변경 이후 데이터는 제외했습니다."),
-        ("ESS. ", "열화 모델은 단순한 경험식이며, ESS의 경제성(요금)은 원칙에 따라 계산하지 않았습니다. v1.3에서는 피크만 다시 계산했습니다."),
+        ("ESS. ", "열화 모델은 단순한 경험식이며, ESS의 경제성(요금)은 원칙에 따라 계산하지 않았습니다. 최종 모델에서는 피크만 계산했고, 손실·열화는 초기 모델 값(부록)입니다."),
         ("설비 공유. ", "모든 시나리오가 같은 크기의 건식냉각기를 쓴다고 가정했습니다(공랭 기준으로 설계). 수랭 전용으로 줄이면 팬 전력이 약간 달라집니다."),
         ("운전 지도. ", "지도는 IT 평균 부하 한 조건에서 그렸습니다. 지도 B의 냉각 오차는 다른 시설(ESIF)의 간소화 모델 오차를 빌려 썼고, COP 오차 ±15%는 가정입니다. 오차를 시뮬레이터 안에 넣어 열수지까지 다시 계산했지만 오차 분포 자체가 대리값·가정값입니다. ρ=0(후보별 독립)은 스트레스 시나리오이며 보장된 최악의 상한이 아닙니다."),
         ("예보 모델. ", "기온 예보 오차는 실제 예보가 아니라 통계적으로 만든 오차(AR(1))입니다. IT 부하는 미리 안다고 보았고, 1년 계획을 한 번에 세웠습니다(매일 갱신하는 운전과 다름)."),
@@ -678,7 +678,7 @@ def build():
     # ---------------- 12. sources
     doc.add_heading("14. 데이터 출처와 재현 방법", 1)
     for lead, txt in [
-        ("NREL ESIF: ", "미국 국립재생에너지연구소 데이터센터 시간별 운영 데이터(2016~2023). 보정·검증에 사용."),
+        ("NLR(옛 NREL) ESIF: ", "미국 국립재생에너지연구소 데이터센터 시간별 운영 데이터(2016~2023, CC BY 4.0). 냉각 전력 모델의 보정·검증에 사용."),
         ("HEATWISE (Aalborg University): ", "공랭 서버실 환수온도 실측(약 25°C). 히트펌프 열원 온도 민감도에 사용."),
         ("Chen et al. (2025), Energy 318: ", "데이터센터 열회수 MILP 운전 최적화, 규칙 운전 대비 8.12% 절감 — 비교 기준 문헌."),
         ("Zhou et al. (2025), Energy 323: ", "데이터센터 폐열 히트펌프 COP 3.87~5.27 — v1.3 COP 범위 확인용."),
@@ -694,8 +694,39 @@ def build():
         ("ENERGY STAR UPS 기준, 건축물에너지효율등급 운영규정 별표3, 박찬일·김래현(2016) 에너지공학: ", "UPS 효율, 1차에너지 계수, 보일러 효율."),
     ]:
         bullet(doc, txt, lead)
-    para(doc, "재현: 터미널에서 `python make_report.py --run <esif_hourly.csv>` 한 줄이면 시뮬레이션 → 조합 분석 → v1.3 → 검증 → 그림 → 이 보고서까지 다시 만들어집니다. "
+    para(doc, "재현: 터미널에서 `python make_report.py --run <esif_hourly.csv>` 한 줄이면 시뮬레이션 → 조합 분석 → 물리 모델 → 검증 → 그림 → 이 보고서까지 다시 만들어집니다. "
               "가정을 바꾸려면 config.py만 고치면 됩니다.", color=MUTED, size=9)
+
+    # ---------------- appendix: early simplified model (v1.2)
+    doc.add_heading("부록. 초기 간소화 모델(v1.2)의 결과 — 참고용", 1)
+    rich(doc, [("본문과 숫자가 다른 이유. ", True),
+               (f"프로젝트 초기에는 팬·펌프 전력을 냉각열의 일정 비율로, 히트펌프 COP를 고정값으로 둔 간소화 모델(v1.2)을 썼습니다. "
+                f"이 모델에서는 효율 냉각 + 폐열 회수의 1차에너지 절감이 {cut(S2.primary_energy_kwh, S0.primary_energy_kwh):.0f}%로 나옵니다. "
+                f"본문의 {pcut('S2 최적운전'):.1f}%는 장비별 물리 모델과 설비 제약을 넣은 최종 모델의 값이며, 이 보고서의 결론은 최종 모델을 따릅니다. "
+                "아래는 초기 모델에서만 계산한 분석으로, 방향을 보는 참고 자료입니다.", False)])
+    figure(doc, R / "v13" / "17_v12_vs_v13.png",
+           "모델을 정교화해도 결론(순서와 대략의 크기)은 유지됩니다. 최종에너지는 시나리오별로 "
+           + ", ".join(f"{n} {(v13.loc[k13, 'final_mwh'] / (s.loc[k12, 'total_final_energy_kwh'] / 1e3) - 1) * 100:+.1f}%"
+                       for n, k12, k13 in [("S0", "S0_Baseline", "65°C | S0 기존(공랭)"), ("S1", "S1_EffCooling", "65°C | S1 규칙운전"),
+                                           ("S2", "S2_HeatRecovery", "65°C | S2 규칙운전")]) + " 달라졌습니다.",
+           "같은 시나리오를 초기 모델(v1.2)과 최종 모델로 계산한 연간 최종에너지 (규칙 운전, 65°C).")
+    abc = combos[combos.combo == "ABC"].iloc[0]; c_only = combos[combos.combo == "C"].iloc[0]
+    figure(doc, R / "combos" / "07_combinations.png",
+           f"(초기 모델) 네 가지 대책 16개 조합 중 ABC(효율냉각+고효율 전력변환+열회수)가 최선입니다. 열회수(C)만 단독으로 하면 전기는 {-c_only.elec_cut_pct:.0f}% 늘지만 가스가 더 크게 줄어듭니다.",
+           "2⁴ = 16개 조합 (초기 모델). A 효율냉각, B 고효율 전력변환, C 히트펌프 열회수, D ESS.")
+    table(doc, ["대책", "단독 효과 (MWh/년)", "다른 대책 위에 추가 (MWh/년)", "평균 효과 (MWh/년)"],
+          [[{"A": "A 효율 냉각", "B": "B 고효율 전력변환", "C": "C 히트펌프 열회수", "D": "D ESS"}[k],
+            f"{r.alone_mwh:,.0f}", f"{r.on_top_of_others_mwh:,.0f}", f"{r.average_effect_mwh:,.0f}"] for k, r in eff.iterrows()],
+          widths=[4.4, 4.0, 4.6, 4.0])
+    para(doc, "단독 효과와 '추가' 효과가 다르면 대책끼리 서로 영향을 준다는 뜻입니다. A(수랭 → 냉각수가 따뜻함)가 있으면 C(히트펌프)의 효율이 좋아져 C의 효과가 커집니다(시너지).",
+         color=MUTED, size=9)
+    figure(doc, R / "02_accounting_bases.png",
+           "(초기 모델) 같은 결과라도 어떤 잣대로 재느냐에 따라 개선 폭이 다릅니다. 전기를 만드는 데 드는 연료까지 따지는 1차에너지 기준에선 개선 폭이 작아집니다.",
+           "최종에너지·1차에너지·엑서지 기준 비교 (초기 모델, S0 = 100).")
+    figure(doc, R / "04_ess_tradeoff.png",
+           f"(초기 모델) ESS는 충방전 손실({e0.ess_loss_kwh/1e3:,.1f} MWh/년)을 더하는 대신 최대 전력을 {e0.peak_cut_kw:,.0f} kW 낮춥니다. "
+           f"배터리를 더 깊게 쓰면 피크는 {e1.peak_cut_kw - e0.peak_cut_kw:,.0f} kW 더 깎이지만 수명이 더 빨리 줄어듭니다.",
+           "ESS 운전 범위 비교 (초기 모델).")
 
     doc.save(OUTFILE)
     print("written", OUTFILE)

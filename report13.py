@@ -187,3 +187,42 @@ for ths in P["heat_supply_c"]:
     g = outs[f"{ths:.0f}°C | S2 최적운전"].gap_1st_2nd_pct
     print(ths, "gap<1%:", round((g < 1).mean() * 100, 1), "median gap", round(g.median(), 3))
 print(sorted(p.name for p in OUT.iterdir()))
+
+# 28–29) heat funnel and monthly heat for the final model (S2 optimal operation)
+fun = {}
+for ths in P["heat_supply_c"]:
+    o = outs[f"{ths:.0f}°C | S2 최적운전"]
+    fun[f"{ths:.0f}°C"] = dict(generated_mwh=o.q_cool.sum() / 1e3, extracted_mwh=o.q_hp_evap.sum() / 1e3,
+                               hp_output_mwh=o.q_hp.sum() / 1e3, useful_mwh=o.q_useful.sum() / 1e3,
+                               pipe_loss_mwh=o.q_pipe_loss.sum() / 1e3, demand_mwh=o.heat_demand_kw.sum() / 1e3,
+                               rejected_mwh=(o.q_cool - o.q_hp_evap).sum() / 1e3, boiler_heat_mwh=o.q_boiler.sum() / 1e3)
+fun = pd.DataFrame(fun).T
+fun["useful_share_pct"] = fun.useful_mwh / fun.generated_mwh * 100
+fun["demand_covered_pct"] = fun.useful_mwh / fun.demand_mwh * 100
+fun.to_csv(OUT / "v13_heat_funnel.csv", encoding="utf-8-sig")
+
+f65 = fun.loc["65°C"]
+steps = [("① 발생열\n(서버·전력변환)", f65.generated_mwh, GRAY), ("② 회수열\n(서버에서 뽑은 열)", f65.extracted_mwh, BLUE),
+         ("③ 히트펌프 출력\n(② + 히트펌프 전기)", f65.hp_output_mwh, GREEN), ("④ 유효열\n(건물이 쓴 열)", f65.useful_mwh, ORANGE)]
+fig, ax = plt.subplots(figsize=(8.6, 3.9))
+for i, (lbl, v, col) in enumerate(steps):
+    ax.barh(i, v, color=col, height=0.6)
+    ax.text(v + 80, i, f"{v:,.0f} MWh ({v / f65.generated_mwh * 100:.0f}%)", va="center", fontsize=9.5)
+ax.set_yticks(range(4)); ax.set_yticklabels([s[0] for s in steps], fontsize=9); ax.invert_yaxis()
+ax.set_xlim(0, f65.generated_mwh * 1.28); ax.set_xlabel("연간 열량 (MWh)")
+ax.set_title("서버가 만든 열 중 실제로 쓰인 열 (S2 최적운전, 난방 공급 65°C)", loc="left", fontsize=11)
+ax.spines[["top", "right"]].set_visible(False)
+fig.tight_layout(); fig.savefig(OUT / "28_heat_funnel.png", dpi=160); plt.close(fig)
+
+o = outs["65°C | S2 최적운전"].copy(); o["month"] = MONTH
+mh = o.groupby("month").agg(useful=("q_useful", "sum"), rejected=("q_cool", "sum"), evap=("q_hp_evap", "sum")) / 1e3
+mh["rejected"] = mh.rejected - mh.evap
+fig, ax = plt.subplots(figsize=(8.6, 3.8))
+ax.bar(mh.index, mh.useful, color=ORANGE, label="건물이 쓴 열(유효열)", edgecolor="white", linewidth=0.6)
+ax.bar(mh.index, mh.rejected, bottom=mh.useful, color=GRAY, label="밖으로 버린 서버 열", edgecolor="white", linewidth=0.6)
+ax.set_xticks(range(1, 13)); ax.set_xlabel("월"); ax.set_ylabel("열량 (MWh)")
+ax.set_title("월별 유효열과 버린 열 (S2 최적운전, 난방 공급 65°C)", loc="left", fontsize=11)
+ax.legend(frameon=False, fontsize=9, ncol=2, loc="upper center", bbox_to_anchor=(0.5, -0.16))
+ax.spines[["top", "right"]].set_visible(False)
+fig.tight_layout(); fig.savefig(OUT / "29_monthly_heat.png", dpi=160); plt.close(fig)
+print(fun.round(1).to_string())
